@@ -1,18 +1,8 @@
-// src/pages/inventory/categories/CategoryList.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import CategoryForm from "./CategoryForm";
-
-/* ─── Mock Data ──────────────────────────────────────────────── */
-const MOCK_CATEGORIES = [
-  { id: 1, name: "Electronics",    description: "Smartphones, laptops, tablets and accessories",  isActive: true,  products: 42  },
-  { id: 2, name: "Apparel",        description: "Clothing, footwear and fashion accessories",     isActive: true,  products: 118 },
-  { id: 3, name: "Home & Living",  description: "Furniture, decor and kitchen essentials",        isActive: true,  products: 67  },
-  { id: 4, name: "Sports",         description: "Equipment and gear for outdoor activities",      isActive: false, products: 23  },
-  { id: 5, name: "Automotive",     description: "Spare parts, tools and car accessories",         isActive: true,  products: 89  },
-  { id: 6, name: "Books",          description: "Fiction, non-fiction and educational titles",    isActive: true,  products: 204 },
-  { id: 7, name: "Health & Beauty",description: "Personal care, supplements and cosmetics",      isActive: false, products: 55  },
-  { id: 8, name: "Toys & Games",   description: "Indoor games, outdoor toys and collectibles",   isActive: true,  products: 31  },
-];
+import { categoryService } from "@/services/inventoryService";
+import { useToast } from "@/components/shared/toast/ToastProvider";
+import ConfirmModal from "@/components/shared/modal/ConfirmModal";
 
 /* ─── Icons ──────────────────────────────────────────────────── */
 const Icon = {
@@ -52,6 +42,12 @@ const Icon = {
     <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
       <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
       <line x1="7" y1="7" x2="7.01" y2="7"/>
+    </svg>
+  ),
+  Refresh: () => (
+    <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+      <polyline points="23 4 23 10 17 10"/>
+      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
     </svg>
   ),
 };
@@ -109,7 +105,7 @@ const badgeStyle = (active) => ({
   color: active ? "var(--color-success)" : "var(--color-danger)",
 });
 
-const actionBtnStyle = (type) => ({
+const actionBtnStyle = (type, disabled) => ({
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
@@ -117,9 +113,10 @@ const actionBtnStyle = (type) => ({
   height: 32,
   borderRadius: 8,
   border: "none",
-  cursor: "pointer",
+  cursor: disabled ? "not-allowed" : "pointer",
   background: type === "indigo" ? "var(--color-primary-100)" : "var(--color-danger-light)",
   color: type === "indigo" ? "var(--color-primary)" : "var(--color-danger)",
+  opacity: disabled ? 0.5 : 1,
   transition: "all 0.15s",
 });
 
@@ -140,60 +137,209 @@ const pageBtnStyle = (active) => ({
 });
 
 /* ─── Toggle Component ───────────────────────────────────────── */
-function Toggle({ active, onToggle }) {
+function Toggle({ active, onToggle, disabled }) {
   return (
-    <div className="cl-toggle" onClick={onToggle}>
+    <div
+      className="cl-toggle"
+      onClick={disabled ? undefined : onToggle}
+      style={{ opacity: disabled ? 0.5 : 1, cursor: disabled ? "not-allowed" : "pointer" }}
+    >
       <div className={`cl-toggle-track${active ? " on" : ""}`} />
       <div className={`cl-toggle-thumb${active ? " on" : ""}`} />
     </div>
   );
 }
 
+/* ─── Skeleton Row ───────────────────────────────────────────── */
+function SkeletonRow({ cols }) {
+  return (
+    <tr style={{ borderBottom: "1px solid var(--color-surface-2)" }}>
+      {Array.from({ length: cols }).map((_, i) => (
+        <td key={i} style={{ padding: "16px" }}>
+          <div style={{
+            height: 14, borderRadius: 6,
+            background: "var(--color-border)",
+            width: `${55 + (i % 3) * 15}%`,
+            animation: "cl-pulse 1.5s ease-in-out infinite",
+          }} />
+        </td>
+      ))}
+    </tr>
+  );
+}
+
 /* ─── Main Component ─────────────────────────────────────────── */
 export default function CategoryList() {
-  const [categories, setCategories] = useState(MOCK_CATEGORIES);
-  const [search,     setSearch]     = useState("");
-  const [filter,     setFilter]     = useState("all");
-  const [page,       setPage]       = useState(1);
-  const [showForm,   setShowForm]   = useState(false);
-  const [editItem,   setEditItem]   = useState(null);
-  const [deleteId,   setDeleteId]   = useState(null);
+  const toast = useToast();
+
+  // ── Data state ────────────────────────────────────────────────
+  const [categories, setCategories]   = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [saving, setSaving]           = useState(false);
+  const [togglingId, setTogglingId]   = useState(null);  // ID being toggled
+
+  // ── UI state ──────────────────────────────────────────────────
+  const [search, setSearch]     = useState("");
+  const [filter, setFilter]     = useState("all");
+  const [page, setPage]         = useState(1);
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [deleteId, setDeleteId] = useState(null);  // ID queued for deletion
 
   const PAGE_SIZE = 5;
 
+  /* ── Fetch all categories from API ──────────────────────────── */
+  const fetchCategories = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      // Fetch a large page to support client-side filtering & stats
+      const res = await categoryService.getAll({ size: 1000, sortBy: "createdAt", sortDir: "desc" });
+      // Unwrap ApiResponse<PagedResponse<CategoryResponse>>
+      const content = res?.data?.content ?? res?.data ?? [];
+      setCategories(content);
+    } catch (err) {
+      toast({
+        type: "error",
+        title: "Failed to load categories",
+        message: err?.message || "Could not connect to the server. Please try again.",
+      });
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCategories();
+  }, [fetchCategories]);
+
+  /* ── Client-side filtering (same logic as before) ────────────── */
   const filtered = categories.filter((c) => {
-    const matchSearch = c.name.toLowerCase().includes(search.toLowerCase()) ||
-                        c.description.toLowerCase().includes(search.toLowerCase());
-    const matchFilter = filter === "all" ? true : filter === "active" ? c.isActive : !c.isActive;
+    const matchSearch =
+      c.name.toLowerCase().includes(search.toLowerCase()) ||
+      (c.description || "").toLowerCase().includes(search.toLowerCase());
+    const matchFilter =
+      filter === "all"      ? true
+      : filter === "active" ? c.isActive
+      :                       !c.isActive;
     return matchSearch && matchFilter;
   });
 
-  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged      = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  const handleToggle = (id) =>
-    setCategories((prev) => prev.map((c) => c.id === id ? { ...c, isActive: !c.isActive } : c));
+  /* ── Toggle active status ────────────────────────────────────── */
+  const handleToggle = async (id) => {
+    const cat = categories.find((c) => c.id === id);
+    if (!cat || togglingId) return;
 
-  const handleDelete = (id) => {
-    setCategories((prev) => prev.filter((c) => c.id !== id));
-    setDeleteId(null);
-  };
+    setTogglingId(id);
+    // Optimistic update
+    setCategories((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, isActive: !c.isActive } : c))
+    );
 
-  const handleSave = (data) => {
-    if (data.id) {
-      setCategories((prev) => prev.map((c) => c.id === data.id ? { ...c, ...data } : c));
-    } else {
-      setCategories((prev) => [...prev, { ...data, id: Date.now(), products: 0 }]);
+    try {
+      await categoryService.update(id, { isActive: !cat.isActive });
+      toast({
+        type: "success",
+        title: "Status updated",
+        message: `"${cat.name}" is now ${!cat.isActive ? "active" : "inactive"}.`,
+      });
+    } catch (err) {
+      // Revert on failure
+      setCategories((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, isActive: cat.isActive } : c))
+      );
+      toast({
+        type: "error",
+        title: "Update failed",
+        message: err?.message || "Could not update category status.",
+      });
+    } finally {
+      setTogglingId(null);
     }
-    setShowForm(false);
-    setEditItem(null);
   };
 
+  /* ── Delete category ─────────────────────────────────────────── */
+  const handleDelete = async () => {
+    if (!deleteId) return;
+    const cat = categories.find((c) => c.id === deleteId);
+
+    try {
+      await categoryService.delete(deleteId);
+      setCategories((prev) => prev.filter((c) => c.id !== deleteId));
+      setDeleteId(null);
+      // Adjust page if last item on page was deleted
+      const newFiltered = categories.filter((c) => c.id !== deleteId && (
+        filter === "all"      ? true
+        : filter === "active" ? c.isActive
+        :                       !c.isActive
+      ));
+      const newTotal = Math.max(1, Math.ceil(newFiltered.length / PAGE_SIZE));
+      if (page > newTotal) setPage(newTotal);
+
+      toast({
+        type: "success",
+        title: "Category deleted",
+        message: cat ? `"${cat.name}" has been removed.` : "Category deleted successfully.",
+      });
+    } catch (err) {
+      setDeleteId(null);
+      toast({
+        type: "error",
+        title: "Delete failed",
+        message: err?.message || "Could not delete this category. It may have active products linked to it.",
+      });
+    }
+  };
+
+  /* ── Create / Update category ────────────────────────────────── */
+  const handleSave = async (data) => {
+    setSaving(true);
+    try {
+      if (data.id) {
+        // Update — send only editable fields
+        const { id, productCount, createdAt, updatedAt, ...payload } = data;
+        await categoryService.update(id, payload);
+        toast({
+          type: "success",
+          title: "Category updated",
+          message: `"${data.name}" has been saved.`,
+        });
+      } else {
+        // Create
+        const { id: _id, ...payload } = data;
+        await categoryService.create(payload);
+        toast({
+          type: "success",
+          title: "Category created",
+          message: `"${data.name}" is now available.`,
+        });
+      }
+      // Refresh list silently (loading spinner stays false)
+      await fetchCategories(true);
+      setShowForm(false);
+      setEditItem(null);
+    } catch (err) {
+      toast({
+        type: "error",
+        title: data.id ? "Update failed" : "Create failed",
+        message: err?.message || "Operation failed. Please try again.",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /* ── Derived stats ───────────────────────────────────────────── */
   const totals = {
     all:      categories.length,
     active:   categories.filter((c) => c.isActive).length,
     inactive: categories.filter((c) => !c.isActive).length,
   };
+
+  /* ── Loading skeleton columns ────────────────────────────────── */
+  const SKELETON_COLS = 7;
 
   return (
     <>
@@ -201,6 +347,12 @@ export default function CategoryList() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');
         *, *::before, *::after { box-sizing: border-box; }
+
+        @keyframes cl-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+        @keyframes cl-spin { to { transform: rotate(360deg); } }
 
         /* ── Page layout ── */
         .cl-page {
@@ -366,7 +518,7 @@ export default function CategoryList() {
 
         /* ── Action buttons ── */
         .cl-action-btn { transition: transform 0.15s; }
-        .cl-action-btn:hover { transform: scale(1.1); }
+        .cl-action-btn:hover:not(:disabled) { transform: scale(1.1); }
 
         /* ── Toggle ── */
         .cl-toggle {
@@ -374,7 +526,6 @@ export default function CategoryList() {
           display: inline-block;
           width: 38px;
           height: 22px;
-          cursor: pointer;
           flex-shrink: 0;
         }
         .cl-toggle-track {
@@ -413,6 +564,36 @@ export default function CategoryList() {
         .cl-page-btn:not([data-active="true"]):hover {
           background: var(--color-surface-2) !important;
         }
+
+        /* ── Error state ── */
+        .cl-error-banner {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 12px 20px;
+          background: var(--color-danger-light);
+          border-bottom: 1px solid var(--color-danger);
+          font-size: 13px;
+          color: var(--color-danger);
+          font-weight: 500;
+        }
+        .cl-retry-btn {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          padding: 5px 12px;
+          border-radius: 6px;
+          border: 1px solid var(--color-danger);
+          background: transparent;
+          color: var(--color-danger);
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          font-family: inherit;
+          white-space: nowrap;
+        }
+        .cl-retry-btn:hover { background: var(--color-danger); color: #fff; }
 
         /* ── Mobile cards (hidden on desktop) ── */
         .cl-mobile-list { display: none; padding: 12px; }
@@ -467,27 +648,17 @@ export default function CategoryList() {
         /* ── Mobile: < 640px ── */
         @media (max-width: 639px) {
           .cl-page { padding: 16px; }
-
-          /* Header */
           .cl-header { margin-bottom: 16px; }
-
-          /* Stats */
           .cl-stats-row { gap: 8px; margin-bottom: 16px; }
           .cl-stat-card { padding: 12px 10px; }
           .cl-stat-value { font-size: 20px; }
           .cl-stat-label { font-size: 10px; }
-
-          /* Toolbar */
           .cl-toolbar { gap: 8px; margin-bottom: 14px; }
           .cl-search-wrap { max-width: none; min-width: 0; flex: 1 1 100%; }
           .cl-filter-select { flex: 1; min-width: 0 !important; }
           .cl-result-count { margin-left: 0; }
-
-          /* Hide desktop table, show mobile cards */
           .cl-table-wrap { display: none; }
           .cl-mobile-list { display: block; }
-
-          /* Pagination */
           .cl-pagination { padding: 12px 16px; }
         }
 
@@ -516,6 +687,7 @@ export default function CategoryList() {
           <button
             className="cl-add-btn"
             onClick={() => { setEditItem(null); setShowForm(true); }}
+            disabled={loading}
           >
             <Icon.Plus /> Add Category
           </button>
@@ -524,12 +696,14 @@ export default function CategoryList() {
         {/* Stats */}
         <div className="cl-stats-row">
           {[
-            { color: "var(--color-primary)", value: totals.all,      label: "Total Categories" },
-            { color: "var(--color-success)", value: totals.active,   label: "Active"            },
-            { color: "var(--color-danger)",  value: totals.inactive, label: "Inactive"          },
+            { color: "var(--color-primary)", value: loading ? "—" : totals.all,      label: "Total Categories" },
+            { color: "var(--color-success)", value: loading ? "—" : totals.active,   label: "Active"           },
+            { color: "var(--color-danger)",  value: loading ? "—" : totals.inactive, label: "Inactive"         },
           ].map(({ color, value, label }) => (
             <div key={label} className="cl-stat-card" style={{ borderLeft: `4px solid ${color}` }}>
-              <div className="cl-stat-value">{value}</div>
+              <div className="cl-stat-value" style={{ color: loading ? "var(--color-border-strong)" : undefined }}>
+                {value}
+              </div>
               <div className="cl-stat-label">{label}</div>
             </div>
           ))}
@@ -544,19 +718,21 @@ export default function CategoryList() {
               placeholder="Search categories…"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              disabled={loading}
             />
           </div>
           <select
             className="cl-filter-select"
             value={filter}
             onChange={(e) => { setFilter(e.target.value); setPage(1); }}
+            disabled={loading}
           >
             <option value="all">All Status</option>
             <option value="active">Active Only</option>
             <option value="inactive">Inactive Only</option>
           </select>
           <span className="cl-result-count">
-            {filtered.length} result{filtered.length !== 1 ? "s" : ""}
+            {loading ? "Loading…" : `${filtered.length} result${filtered.length !== 1 ? "s" : ""}`}
           </span>
         </div>
 
@@ -578,13 +754,22 @@ export default function CategoryList() {
                 </tr>
               </thead>
               <tbody>
-                {paged.length === 0 ? (
+                {/* Loading skeletons */}
+                {loading ? (
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <SkeletonRow key={i} cols={SKELETON_COLS} />
+                  ))
+                ) : paged.length === 0 ? (
                   <tr>
                     <td colSpan={7} style={{ textAlign: "center", padding: "60px 20px" }}>
                       <div style={{ fontSize: 40, marginBottom: 8 }}>📂</div>
-                      <div style={{ fontWeight: 600, color: "var(--color-text-muted)" }}>No categories found</div>
+                      <div style={{ fontWeight: 600, color: "var(--color-text-muted)" }}>
+                        {search || filter !== "all" ? "No categories match your filters" : "No categories yet"}
+                      </div>
                       <div style={{ fontSize: 13, marginTop: 4, color: "var(--color-text-subtle)" }}>
-                        Try adjusting your search or filters
+                        {search || filter !== "all"
+                          ? "Try adjusting your search or filters"
+                          : "Click \"Add Category\" to create your first category"}
                       </div>
                     </td>
                   </tr>
@@ -605,11 +790,11 @@ export default function CategoryList() {
                     </td>
                     <td className="cl-col-desc" style={tdStyle}>
                       <div style={{ fontSize: 13, color: "var(--color-text-muted)", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {cat.description}
+                        {cat.description || <span style={{ color: "var(--color-text-subtle)", fontStyle: "italic" }}>No description</span>}
                       </div>
                     </td>
                     <td style={{ ...tdStyle, textAlign: "center" }}>
-                      <span style={countBadgeStyle}>{cat.products}</span>
+                      <span style={countBadgeStyle}>{cat.productCount ?? 0}</span>
                     </td>
                     <td className="cl-col-status" style={{ ...tdStyle, textAlign: "center" }}>
                       <span style={badgeStyle(cat.isActive)}>
@@ -618,20 +803,36 @@ export default function CategoryList() {
                       </span>
                     </td>
                     <td className="cl-col-active" style={{ ...tdStyle, textAlign: "center" }}>
-                      <Toggle active={cat.isActive} onToggle={() => handleToggle(cat.id)} />
+                      <div style={{ display: "flex", justifyContent: "center" }}>
+                        {togglingId === cat.id ? (
+                          <span style={{
+                            width: 18, height: 18, border: "2px solid var(--color-border-strong)",
+                            borderTopColor: "var(--color-primary)", borderRadius: "50%",
+                            display: "inline-block", animation: "cl-spin 0.7s linear infinite",
+                          }} />
+                        ) : (
+                          <Toggle
+                            active={cat.isActive}
+                            onToggle={() => handleToggle(cat.id)}
+                            disabled={!!togglingId}
+                          />
+                        )}
+                      </div>
                     </td>
                     <td style={{ ...tdStyle, textAlign: "center" }}>
                       <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
                         <button
                           className="cl-action-btn"
                           title="Edit"
-                          style={actionBtnStyle("indigo")}
+                          style={actionBtnStyle("indigo", !!togglingId)}
+                          disabled={!!togglingId}
                           onClick={() => { setEditItem(cat); setShowForm(true); }}
                         ><Icon.Edit /></button>
                         <button
                           className="cl-action-btn"
                           title="Delete"
-                          style={actionBtnStyle("red")}
+                          style={actionBtnStyle("red", !!togglingId)}
+                          disabled={!!togglingId}
                           onClick={() => setDeleteId(cat.id)}
                         ><Icon.Trash /></button>
                       </div>
@@ -644,13 +845,26 @@ export default function CategoryList() {
 
           {/* ── Mobile Cards ─────────────────────────────────── */}
           <div className="cl-mobile-list">
-            {paged.length === 0 ? (
+            {loading ? (
+              <div style={{ textAlign: "center", padding: "40px 0", color: "var(--color-text-subtle)" }}>
+                <span style={{
+                  width: 28, height: 28, border: "3px solid var(--color-border)",
+                  borderTopColor: "var(--color-primary)", borderRadius: "50%",
+                  display: "inline-block", animation: "cl-spin 0.7s linear infinite",
+                }} />
+                <div style={{ marginTop: 12, fontSize: 13 }}>Loading categories…</div>
+              </div>
+            ) : paged.length === 0 ? (
               <div style={{ textAlign: "center", padding: "40px 0", color: "var(--color-text-subtle)" }}>
                 <div style={{ fontSize: 36, marginBottom: 8 }}>📂</div>
-                <div style={{ fontWeight: 600, color: "var(--color-text-muted)" }}>No categories found</div>
-                <div style={{ fontSize: 13, marginTop: 4 }}>Try adjusting your search or filters</div>
+                <div style={{ fontWeight: 600, color: "var(--color-text-muted)" }}>
+                  {search || filter !== "all" ? "No categories match your filters" : "No categories yet"}
+                </div>
+                <div style={{ fontSize: 13, marginTop: 4 }}>
+                  {search || filter !== "all" ? "Try adjusting your search or filters" : "Click \"Add Category\" to get started"}
+                </div>
               </div>
-            ) : paged.map((cat, i) => (
+            ) : paged.map((cat) => (
               <div key={cat.id} className="cl-mobile-card">
                 <div className="cl-mc-header">
                   <div className="cl-mc-name">
@@ -660,31 +874,47 @@ export default function CategoryList() {
                   <div className="cl-mc-actions">
                     <button
                       className="cl-action-btn"
-                      style={actionBtnStyle("indigo")}
+                      style={actionBtnStyle("indigo", !!togglingId)}
+                      disabled={!!togglingId}
                       onClick={() => { setEditItem(cat); setShowForm(true); }}
                     ><Icon.Edit /></button>
                     <button
                       className="cl-action-btn"
-                      style={actionBtnStyle("red")}
+                      style={actionBtnStyle("red", !!togglingId)}
+                      disabled={!!togglingId}
                       onClick={() => setDeleteId(cat.id)}
                     ><Icon.Trash /></button>
                   </div>
                 </div>
-                <div className="cl-mc-desc">{cat.description}</div>
+                <div className="cl-mc-desc">
+                  {cat.description || <span style={{ fontStyle: "italic", color: "var(--color-text-subtle)" }}>No description</span>}
+                </div>
                 <div className="cl-mc-footer">
-                  <span style={countBadgeStyle}>{cat.products} products</span>
+                  <span style={countBadgeStyle}>{cat.productCount ?? 0} products</span>
                   <span style={badgeStyle(cat.isActive)}>
                     <span style={{ width: 6, height: 6, borderRadius: "50%", background: cat.isActive ? "var(--color-success)" : "var(--color-danger)" }} />
                     {cat.isActive ? "Active" : "Inactive"}
                   </span>
-                  <Toggle active={cat.isActive} onToggle={() => handleToggle(cat.id)} />
+                  {togglingId === cat.id ? (
+                    <span style={{
+                      width: 16, height: 16, border: "2px solid var(--color-border-strong)",
+                      borderTopColor: "var(--color-primary)", borderRadius: "50%",
+                      display: "inline-block", animation: "cl-spin 0.7s linear infinite",
+                    }} />
+                  ) : (
+                    <Toggle
+                      active={cat.isActive}
+                      onToggle={() => handleToggle(cat.id)}
+                      disabled={!!togglingId}
+                    />
+                  )}
                 </div>
               </div>
             ))}
           </div>
 
           {/* ── Pagination ───────────────────────────────────── */}
-          {totalPages > 1 && (
+          {!loading && totalPages > 1 && (
             <div className="cl-pagination">
               <span style={{ fontSize: 13, color: "var(--color-text-muted)" }}>
                 Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length} categories
@@ -723,64 +953,30 @@ export default function CategoryList() {
       {showForm && (
         <CategoryForm
           item={editItem}
+          saving={saving}
           onSave={handleSave}
-          onClose={() => { setShowForm(false); setEditItem(null); }}
+          onClose={() => {
+            if (!saving) { setShowForm(false); setEditItem(null); }
+          }}
         />
       )}
 
-      {/* ── Delete Confirm Modal ────────────────────────────────── */}
-      {deleteId && (
-        <div style={{
-          position: "fixed", inset: 0,
-          background: "rgba(15,23,42,0.45)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          zIndex: 1000, padding: 16,
-        }}>
-          <div style={{
-            background: "var(--color-surface)",
-            borderRadius: "var(--radius-xl)",
-            padding: "32px 36px",
-            maxWidth: 380,
-            width: "100%",
-            boxShadow: "var(--shadow-lg)",
-          }}>
-            <div style={{ fontSize: 40, textAlign: "center", marginBottom: 12 }}>🗑️</div>
-            <h3 style={{
-              textAlign: "center", margin: "0 0 8px",
-              fontSize: 18, fontWeight: 700, color: "var(--color-text)",
-            }}>Delete Category?</h3>
-            <p style={{
-              textAlign: "center", color: "var(--color-text-muted)",
-              fontSize: 14, marginBottom: 24,
-            }}>
-              This action cannot be undone. All data associated with this category will be permanently removed.
-            </p>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button
-                onClick={() => setDeleteId(null)}
-                style={{
-                  flex: 1, padding: 11, borderRadius: "var(--radius-md)",
-                  border: "1.5px solid var(--color-border)",
-                  background: "var(--color-surface)", color: "var(--color-text)",
-                  fontWeight: 600, cursor: "pointer", fontSize: 14, fontFamily: "inherit",
-                }}
-              >Cancel</button>
-              <button
-                onClick={() => handleDelete(deleteId)}
-                style={{
-                  flex: 1, padding: 11, borderRadius: "var(--radius-md)",
-                  border: "none",
-                  background: "linear-gradient(135deg, var(--color-danger), #dc2626)",
-                  color: "var(--color-text-inverse)",
-                  fontWeight: 600, cursor: "pointer", fontSize: 14,
-                  boxShadow: "0 4px 12px var(--color-danger-light)",
-                  fontFamily: "inherit",
-                }}
-              >Delete</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* ── Delete Confirm Modal (shared ConfirmModal) ──────────── */}
+      <ConfirmModal
+        isOpen={!!deleteId}
+        onClose={() => setDeleteId(null)}
+        onConfirm={handleDelete}
+        title="Delete Category?"
+        message={(() => {
+          const cat = categories.find((c) => c.id === deleteId);
+          const count = cat?.productCount ?? 0;
+          return count > 0
+            ? `"${cat?.name}" has ${count} active product${count !== 1 ? "s" : ""} linked to it and cannot be deleted. Please reassign or remove those products first.`
+            : `"${cat?.name || "This category"}" will be permanently removed. This action cannot be undone.`;
+        })()}
+        confirmLabel="Delete"
+        variant="danger"
+      />
     </>
   );
 }

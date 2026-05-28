@@ -20,6 +20,9 @@ const ProductDetail = lazy(() => import('@/pages/inventory/products/ProductDetai
 const CategoryList  = lazy(() => import('@/pages/inventory/categories/CategoryList'))
 const CategoryForm  = lazy(() => import('@/pages/inventory/categories/CategoryForm'))
 
+// Master data
+const WarehouseList = lazy(() => import('@/pages/master-data/warehouses/WarehouseList'))
+
 // ── Roles ─────────────────────────────────────────────────────────────────
 const RolesPermissions = lazy(() => import('@/pages/roles/RolesPermissions'))
 
@@ -83,6 +86,8 @@ export const router = createBrowserRouter([
 
       // Roles
       rr(ROUTES.ROLES, RolesPermissions),
+
+      rr(ROUTES.WAREHOUSES, WarehouseList),
 
       // Profile (no role gate — any authenticated user)
       { path: ROUTES.PROFILE, element: s(ProfilePage) },

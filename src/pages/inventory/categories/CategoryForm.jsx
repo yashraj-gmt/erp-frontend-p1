@@ -20,7 +20,16 @@ const Icon = {
   ),
 };
 
-export default function CategoryForm({ item, onSave, onClose }) {
+/**
+ * CategoryForm — Create / Edit modal.
+ *
+ * Props:
+ *   item    — category object when editing, null when creating
+ *   saving  — boolean controlled by parent (shows spinner, disables submit)
+ *   onSave  — (formData) => void  — parent handles the API call
+ *   onClose — () => void
+ */
+export default function CategoryForm({ item, saving = false, onSave, onClose }) {
   const isEdit = Boolean(item);
 
   const [form, setForm] = useState({
@@ -29,7 +38,6 @@ export default function CategoryForm({ item, onSave, onClose }) {
     isActive:    true,
   });
   const [errors, setErrors] = useState({});
-  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (item) {
@@ -43,20 +51,18 @@ export default function CategoryForm({ item, onSave, onClose }) {
 
   const validate = () => {
     const e = {};
-    if (!form.name.trim())               e.name = "Category name is required.";
+    if (!form.name.trim())                e.name = "Category name is required.";
     else if (form.name.trim().length < 2) e.name = "Name must be at least 2 characters.";
     else if (form.name.trim().length > 100) e.name = "Name cannot exceed 100 characters.";
     return e;
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
     const errs = validate();
     if (Object.keys(errs).length) { setErrors(errs); return; }
-    setSaving(true);
-    await new Promise((r) => setTimeout(r, 600)); // Simulate API
+    // Pass validated data to parent — parent handles API + loading state
     onSave({ ...(item || {}), ...form, name: form.name.trim() });
-    setSaving(false);
   };
 
   const field = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -116,11 +122,11 @@ export default function CategoryForm({ item, onSave, onClose }) {
         .cf-input:focus { border-color: #6366f1 !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.12) !important; }
         .cf-close:hover { background: rgba(255,255,255,0.25) !important; }
         .cf-cancel:hover { background: #f1f5f9 !important; }
-        .cf-submit:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(99,102,241,0.4) !important; }
+        .cf-submit:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(99,102,241,0.4) !important; }
         .cf-submit:disabled { opacity: 0.7; cursor: not-allowed; }
       `}</style>
 
-      <div style={overlay} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={overlay} onClick={(e) => e.target === e.currentTarget && !saving && onClose()}>
         <div style={modal}>
           {/* Modal Header */}
           <div style={modalHeader}>
@@ -145,9 +151,11 @@ export default function CategoryForm({ item, onSave, onClose }) {
             <button
               className="cf-close"
               onClick={onClose}
+              disabled={saving}
               style={{
                 background: "rgba(255,255,255,0.15)", border: "none",
-                borderRadius: 8, padding: 6, cursor: "pointer", color: "#fff",
+                borderRadius: 8, padding: 6, cursor: saving ? "not-allowed" : "pointer",
+                color: "#fff", opacity: saving ? 0.6 : 1,
                 display: "flex", alignItems: "center", justifyContent: "center",
                 transition: "background 0.15s",
               }}
@@ -170,6 +178,7 @@ export default function CategoryForm({ item, onSave, onClose }) {
                 value={form.name}
                 onChange={(e) => { field("name", e.target.value); setErrors((err) => ({ ...err, name: "" })); }}
                 maxLength={100}
+                disabled={saving}
               />
               {errors.name && <div style={errText}>{errors.name}</div>}
               <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>
@@ -182,10 +191,11 @@ export default function CategoryForm({ item, onSave, onClose }) {
               <label style={label}>Description</label>
               <textarea
                 className="cf-input"
-                style={{ ...inputBase(false), resize: "vertical", minHeight: 90, lineHeight: 1.6 }}
+                style={{ ...inputBase(false), resize: "vertical", minHeight: 90, lineHeight: 1.6, opacity: saving ? 0.7 : 1 }}
                 placeholder="Brief description of this category (optional)"
                 value={form.description}
                 onChange={(e) => field("description", e.target.value)}
+                disabled={saving}
               />
             </div>
 
@@ -195,6 +205,7 @@ export default function CategoryForm({ item, onSave, onClose }) {
               display: "flex", alignItems: "center", justifyContent: "space-between",
               background: "#f8fafc", borderRadius: 10, padding: "14px 16px",
               border: "1.5px solid #e2e8f0",
+              opacity: saving ? 0.7 : 1,
             }}>
               <div>
                 <div style={{ fontWeight: 600, fontSize: 14, color: "#0f172a" }}>Active Status</div>
@@ -202,11 +213,12 @@ export default function CategoryForm({ item, onSave, onClose }) {
                   {form.isActive ? "Category is visible and available" : "Category is hidden from users"}
                 </div>
               </div>
-              <label style={{ position: "relative", display: "inline-block", width: 44, height: 24, cursor: "pointer" }}>
+              <label style={{ position: "relative", display: "inline-block", width: 44, height: 24, cursor: saving ? "not-allowed" : "pointer" }}>
                 <input
                   type="checkbox"
                   checked={form.isActive}
                   onChange={(e) => field("isActive", e.target.checked)}
+                  disabled={saving}
                   style={{ opacity: 0, width: 0, height: 0 }}
                 />
                 <span style={{
@@ -231,11 +243,14 @@ export default function CategoryForm({ item, onSave, onClose }) {
                 type="button"
                 className="cf-cancel"
                 onClick={onClose}
+                disabled={saving}
                 style={{
                   flex: 1, padding: "12px", borderRadius: 10,
                   border: "1.5px solid #e2e8f0", background: "#fff",
-                  color: "#334155", fontWeight: 600, cursor: "pointer",
+                  color: "#334155", fontWeight: 600,
+                  cursor: saving ? "not-allowed" : "pointer",
                   fontSize: 14, transition: "background 0.15s",
+                  opacity: saving ? 0.6 : 1,
                 }}
               >
                 Cancel
@@ -247,7 +262,7 @@ export default function CategoryForm({ item, onSave, onClose }) {
                 style={{
                   flex: 2, padding: "12px", borderRadius: 10, border: "none",
                   background: "linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)",
-                  color: "#fff", fontWeight: 600, cursor: "pointer",
+                  color: "#fff", fontWeight: 600, cursor: saving ? "not-allowed" : "pointer",
                   fontSize: 14, display: "flex", alignItems: "center",
                   justifyContent: "center", gap: 8,
                   boxShadow: "0 4px 14px rgba(99,102,241,0.35)",
@@ -259,7 +274,7 @@ export default function CategoryForm({ item, onSave, onClose }) {
                     <span style={{
                       width: 16, height: 16, border: "2px solid rgba(255,255,255,0.4)",
                       borderTopColor: "#fff", borderRadius: "50%",
-                      display: "inline-block", animation: "spin 0.7s linear infinite",
+                      display: "inline-block", animation: "cf-spin 0.7s linear infinite",
                     }} />
                     Saving…
                   </>
@@ -276,7 +291,7 @@ export default function CategoryForm({ item, onSave, onClose }) {
       </div>
 
       <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes cf-spin { to { transform: rotate(360deg); } }
       `}</style>
     </>
   );

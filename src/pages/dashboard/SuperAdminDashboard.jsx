@@ -107,13 +107,13 @@ const CustomTooltip = ({ active, payload, label }) => {
       {payload.map(p => (
         <p key={p.name} style={{ color: p.color }}>
           {p.name}: <span className="font-bold">{p.value}</span>
-        </p>
+        </p>  
       ))}
     </div>
   )
 }
 
-// ─── Platform section (shown above AdminDashboard) ────────────────────────────
+// ─── Platform section (shown above AdminDashboard)
 function PlatformSection() {
   return (
     <div className="space-y-5 mb-2">

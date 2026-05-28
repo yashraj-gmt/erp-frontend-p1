@@ -111,7 +111,7 @@
     color: var(--color-danger);
   }
   
-  /* ── Header hamburger button ────────────────────────────────────────────── */
+  /* ── Header hamburger button  */
   .header-icon-btn {
     color: var(--color-text-muted);
     transition: background 150ms ease, color 150ms ease;
@@ -120,3 +120,6 @@
     background: var(--color-surface-2);
     color: var(--color-text);
   }
+
+
+    
